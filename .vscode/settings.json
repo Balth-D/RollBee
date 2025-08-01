@@ -1,0 +1,14 @@
+{
+    "C_Cpp.intelliSenseEngine": "default",
+    "idf.espIdfPath": "/opt/esp/idf",
+    "idf.toolsPath": "/opt/esp",
+    "idf.pythonInstallPath": "/usr/bin/python3",
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32h2"
+    },
+    "idf.openOcdConfigs": [
+        "board/esp32h2-ftdi.cfg"
+    ],
+    "idf.flashType": "UART",
+    "idf.port": "/dev/ttyUSB0"
+}
