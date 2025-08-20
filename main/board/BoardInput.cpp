@@ -5,8 +5,14 @@
 BoardInput::BoardInput(gpio_num_t pin_id, gpio_mode_t mode)
     : pin_id{pin_id}
 {
-    gpio_reset_pin(pin_id);
-    gpio_set_direction(pin_id, mode);
+    gpio_config_t cfg = {
+        .pin_bit_mask           = BIT64(pin_id),
+        .mode                   = mode,
+        .pull_up_en             = GPIO_PULLUP_DISABLE,
+        .pull_down_en           = GPIO_PULLDOWN_DISABLE,
+        .intr_type              = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
 }
 
 bool BoardInput::Read(void) const

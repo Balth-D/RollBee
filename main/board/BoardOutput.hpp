@@ -7,7 +7,7 @@
 class BoardOutput
 {
 public:
-    BoardOutput(gpio_num_t pin_id, gpio_mode_t mode);
+    BoardOutput(gpio_num_t pin_id, gpio_mode_t mode, bool default_state = false);
 
     bool Read(void) const;
     bool Write(bool state);
