@@ -10,6 +10,8 @@
 #include "board/BoardI2cMaster.hpp"
 #include "board/BoardTemperature.hpp"
 
+#include "AppZigbee.hpp"
+
 static const char *TAG = "main.cpp";
 
 static BoardOutput led_1(GPIO_NUM_10, GPIO_MODE_OUTPUT);
@@ -128,12 +130,14 @@ extern "C" void app_main(void)
     i2c_master.Configure(GPIO_NUM_4, GPIO_NUM_5, false, 40000);
 
     sensor.StartMeasurement();
+
+    AppZigbee_Init();
     
     while (1)
     {
         ESP_LOGI(TAG, "Temperature is %.2f °C and humidity is %.2f %%", 
             sensor.GetTemperature() / 100.0,
-            sensor.GetHumidityCompensated() / 100.0);
+            sensor.GetHumidity() / 100.0);
             
         sensor.Sample();
         vTaskDelay(4e3 / portTICK_PERIOD_MS);
