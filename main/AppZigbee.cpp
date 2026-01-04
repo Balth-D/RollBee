@@ -22,9 +22,6 @@ typedef struct {
     uint8_t current_position_lift_percentage;
     uint8_t installed_open_limit_lift;
     uint8_t installed_closed_limit_lift;
-    uint8_t current_position_tilt_percentage;
-    uint8_t installed_open_limit_tilt;
-    uint8_t installed_closed_limit_tilt;
 } zb_window_covering_attrs_t;
 
 typedef struct {
@@ -43,13 +40,9 @@ typedef struct {
 
 // --- LOCAL VARIABLES  ---
 static zb_window_covering_attrs_t window_covering_ctx = {
-    .current_position_lift_percentage = 0,
+    .current_position_lift_percentage = 50,
     .installed_open_limit_lift        = 0,
-    .installed_closed_limit_lift      = 100,
-    // Unused but necessary for the bridge
-    .current_position_tilt_percentage = 0,
-    .installed_open_limit_tilt        = 0,
-    .installed_closed_limit_tilt      = 0,
+    .installed_closed_limit_lift      = 100
 };
 
 // Values in °C*100
@@ -73,7 +66,10 @@ static constexpr uint8_t WINDOW_COVERING_ENDPOINT   = 1;
 static constexpr uint8_t SENSOR_ENDPOINT            = 10;
 
 static char* manufacturer_id  = "\x07""Balth.D";
-static char* device_id        = "\x15""ZB_Things covering v2";
+static char* device_id        = "\x0B""BD_ZBT_C_v2";
+
+static QueueHandle_t queue_zigbee_to_main;
+static QueueHandle_t queue_main_to_zigbee;
 
 // --- STATIC FUNCTIONS DECLARATION ---
 static void ZigbeeStartTopLevelCommissionningHandler(uint8_t mode_mask);
@@ -93,6 +89,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     uint32_t* p_sg_p        = signal_struct->p_app_signal;
     esp_err_t err_status    = signal_struct->esp_err_status;
     esp_zb_app_signal_type_t sig_type = static_cast<esp_zb_app_signal_type_t>(*p_sg_p);
+    ZigbeeToMainEvent       evt;
 
     switch (sig_type)
     {
@@ -118,6 +115,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             }
             else
             {
+                // Notify main
+                evt = ZTM_NETWORK_JOINED;
+                xQueueSend(queue_zigbee_to_main, &evt, 0);
+
                 ESP_LOGI(TAG, "Device rebooted");
             }
         }
@@ -140,6 +141,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                      extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
                      extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
+
+            // Notify main
+            evt = ZTM_NETWORK_JOINED;
+            xQueueSend(queue_zigbee_to_main, &evt, 0);
         }
         // Failed to join network = restart steering process
         else
@@ -147,6 +152,13 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
             esp_zb_scheduler_alarm((esp_zb_callback_t) ZigbeeStartTopLevelCommissionningHandler, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
         }
+        break;
+    }
+    case ESP_ZB_ZDO_SIGNAL_LEAVE:
+    {
+        // Notify main
+        evt = ZTM_NETWORK_LEFT;
+        xQueueSend(queue_zigbee_to_main, &evt, 0);
         break;
     }
     // Unhandled signal
@@ -180,6 +192,51 @@ static esp_err_t ZigbeeAttributeHandler(const esp_zb_zcl_set_attr_value_message_
     return ret;
 }
 
+static esp_err_t ZigbeeWindowCoveringHandler(const esp_zb_zcl_window_covering_movement_message_t* message)
+{
+    esp_err_t ret = ESP_OK;
+
+    ESP_RETURN_ON_FALSE(message, ESP_FAIL, TAG, "Empty message");
+    ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG, "Received message: error status(%d)", message->info.status);
+
+    ESP_LOGI(TAG, "Received message: endpoint(%d), cluster(0x%x), command(0x%x)", message->info.dst_endpoint, message->info.cluster, message->command);
+
+    if (message->info.dst_endpoint == WINDOW_COVERING_ENDPOINT)
+    {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING)
+        {
+            ZigbeeToMainEvent evt;
+
+            switch (message->command)
+            {
+            case ESP_ZB_ZCL_CMD_WINDOW_COVERING_UP_OPEN:
+            {
+                evt = ZTM_OPEN;
+                xQueueSend(queue_zigbee_to_main, &evt, 0);
+                break;
+            }
+            case ESP_ZB_ZCL_CMD_WINDOW_COVERING_DOWN_CLOSE:
+            {
+                evt = ZTM_CLOSE;
+                xQueueSend(queue_zigbee_to_main, &evt, 0);
+                break;
+            }
+            case ESP_ZB_ZCL_CMD_WINDOW_COVERING_STOP:
+            {
+                evt = ZTM_STOP;
+                xQueueSend(queue_zigbee_to_main, &evt, 0);
+                break;
+            }
+            default:
+            {
+                break;
+            }
+            }
+        }
+    }
+    return ret;
+}
+
 // Zigbee event handler
 static esp_err_t ZigbeeHandler(esp_zb_core_action_callback_id_t callback_id, const void* message)
 {
@@ -191,6 +248,11 @@ static esp_err_t ZigbeeHandler(esp_zb_core_action_callback_id_t callback_id, con
     {
         // Attribute has to be updated
         ret = ZigbeeAttributeHandler((esp_zb_zcl_set_attr_value_message_t*) message);
+        break;
+    }
+    case ESP_ZB_CORE_WINDOW_COVERING_MOVEMENT_CB_ID:
+    {
+        ret = ZigbeeWindowCoveringHandler((esp_zb_zcl_window_covering_movement_message_t*) message);
         break;
     }
     default:
@@ -290,11 +352,7 @@ static void ZigbeeTask(void *params)
     ESP_ERROR_CHECK(esp_zb_window_covering_cluster_add_attr(covering_cluster, ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID,  &window_covering_ctx.current_position_lift_percentage));
     ESP_ERROR_CHECK(esp_zb_window_covering_cluster_add_attr(covering_cluster, ESP_ZB_ZCL_ATTR_WINDOW_COVERING_INSTALLED_OPEN_LIMIT_LIFT_ID,         &window_covering_ctx.installed_open_limit_lift));
     ESP_ERROR_CHECK(esp_zb_window_covering_cluster_add_attr(covering_cluster, ESP_ZB_ZCL_ATTR_WINDOW_COVERING_INSTALLED_CLOSED_LIMIT_LIFT_ID,       &window_covering_ctx.installed_closed_limit_lift));
-    
-    ESP_ERROR_CHECK(esp_zb_window_covering_cluster_add_attr(covering_cluster, ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_TILT_PERCENTAGE_ID,  &window_covering_ctx.current_position_tilt_percentage));
-    ESP_ERROR_CHECK(esp_zb_window_covering_cluster_add_attr(covering_cluster, ESP_ZB_ZCL_ATTR_WINDOW_COVERING_INSTALLED_OPEN_LIMIT_TILT_ID,         &window_covering_ctx.installed_open_limit_tilt));
-    ESP_ERROR_CHECK(esp_zb_window_covering_cluster_add_attr(covering_cluster, ESP_ZB_ZCL_ATTR_WINDOW_COVERING_INSTALLED_CLOSED_LIMIT_TILT_ID,       &window_covering_ctx.installed_closed_limit_tilt));
-    
+
     // Register endpoints
     esp_zb_device_register(ep_list);
     
@@ -309,9 +367,75 @@ static void ZigbeeTask(void *params)
     esp_zb_stack_main_loop();
 }
 
-// --- EXPOSED FUNCTIONS ---
-bool AppZigbee_Init(void)
+static void AttributesUpdateTask(void* params)
 {
+    MainToZigbeePacket msg;
+
+    for (;;)
+    {
+        // If the main updated an attribute (block 1s otherwise)
+        if (xQueueReceive(queue_main_to_zigbee, &msg, 1e3 / portTICK_PERIOD_MS) == pdPASS)
+        {
+            esp_zb_lock_acquire(portMAX_DELAY);
+
+            switch (msg.event)
+            {
+            case MTZ_OPENED:
+            {
+                window_covering_ctx.current_position_lift_percentage = 0;
+                esp_zb_zcl_set_attribute_val(WINDOW_COVERING_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID, &window_covering_ctx.current_position_lift_percentage, false);
+                break;
+            }
+            case MTZ_CLOSED:
+            {
+                window_covering_ctx.current_position_lift_percentage = 100;
+                esp_zb_zcl_set_attribute_val(WINDOW_COVERING_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID, &window_covering_ctx.current_position_lift_percentage, false);
+                break;
+            }
+            case MTZ_UNKNOWN:
+            {
+                window_covering_ctx.current_position_lift_percentage = 50;
+                esp_zb_zcl_set_attribute_val(WINDOW_COVERING_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID, &window_covering_ctx.current_position_lift_percentage, false);
+                break;
+            }
+            case MTZ_UPDATE_TEMPERATURE:
+            {
+                temperature_measurement_ctx.measure_value = msg.payload;
+                esp_zb_zcl_set_attribute_val(SENSOR_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID, &temperature_measurement_ctx.measure_value, false);
+                
+                break;
+            }
+            case MTZ_UPDATE_HUMIDITY:
+            {
+                humidity_measurement_ctx.measure_value = msg.payload;
+                esp_zb_zcl_set_attribute_val(SENSOR_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID, &humidity_measurement_ctx.measure_value, false);
+                break;
+            }
+            default:
+                break;
+            }
+
+            esp_zb_lock_release();
+        }
+    }
+}
+
+// --- EXPOSED FUNCTIONS ---
+bool AppZigbee_Init(QueueHandle_t queue_zm, QueueHandle_t queue_mz)
+{
+    queue_zigbee_to_main = queue_zm;
+    queue_main_to_zigbee = queue_mz;
+
     esp_zb_platform_config_t config = {};
     config.radio_config.radio_mode          = ZB_RADIO_MODE_NATIVE;
     config.host_config.host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE;
@@ -319,6 +443,14 @@ bool AppZigbee_Init(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
     xTaskCreate(ZigbeeTask, "Task-Zigbee", 4096, NULL, 5, NULL);
+    xTaskCreate(AttributesUpdateTask, "Task-Attributes", 1024, NULL, 5, NULL);
+
+    return true;
+}
+
+bool AppZigbee_Reset(void)
+{
+    esp_zb_bdb_reset_via_local_action();
 
     return true;
 }

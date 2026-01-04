@@ -93,6 +93,11 @@ uint16_t BoardTemperature::GetHumidity(void) const
     return humidity;
 }
 
+uint16_t BoardTemperature::GetAveragedHumidity(void) const
+{
+    return averaged_humidity;
+}
+
 uint16_t BoardTemperature::GetHumidityCompensated(void) const
 {
     return humidity + ((2500 - (temperature)) * SI7021_TEMPERATURE_COEFFICIENT);
@@ -101,6 +106,11 @@ uint16_t BoardTemperature::GetHumidityCompensated(void) const
 int16_t BoardTemperature::GetTemperature(void) const
 {
     return temperature;
+}
+
+int16_t BoardTemperature::GetAveragedTemperature(void) const
+{
+    return averaged_temperature;
 }
 
 int16_t BoardTemperature::GetDewPoint(void) const
@@ -165,7 +175,8 @@ bool BoardTemperature::Sample(void)
         {
             val = (val * TEMPERATURE_COEFF_MUL) / 65536 + TEMPERATURE_COEFF_ADD;
             temperature = val;
-
+            averaged_temperature = (AVG_BETA * averaged_temperature) + (1 - AVG_BETA) * temperature;
+            
             // Start next measurement. Will be finished before next task entry
             StartMeasurementInternal(MEASURE_HUMIDITY);
         }
@@ -173,6 +184,7 @@ bool BoardTemperature::Sample(void)
         {
             val = (val * HUMIDITY_COEFF_MUL) / 65536 + HUMIDITY_COEFF_ADD;
             humidity = static_cast<uint16_t>(val);
+            averaged_humidity = (AVG_BETA * averaged_humidity) + (1 - AVG_BETA) * humidity;
 
             // Compute dew point
             //float partial_pressure = pow(10, SI7021_CONSTANT_A - SI7021_CONSTANT_B / ((static_cast<float>(temperature) / 100) + SI7021_CONSTANT_C));
