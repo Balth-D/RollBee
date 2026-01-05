@@ -23,12 +23,15 @@ enum CoverState {
 };
 
 // --- LOCAL VARIABLES ---
+
+// Outputs
 static BoardOutput led_1(GPIO_NUM_10, GPIO_MODE_OUTPUT);
 static BoardOutput led_2(GPIO_NUM_11, GPIO_MODE_OUTPUT);
 static BoardOutput led_3(GPIO_NUM_12, GPIO_MODE_OUTPUT);
 
 static BoardOutput load(GPIO_NUM_26, GPIO_MODE_OUTPUT);
 
+// Inputs
 static BoardInput  sw_1(GPIO_NUM_13, GPIO_MODE_INPUT);
 static BoardInput  sw_2(GPIO_NUM_14, GPIO_MODE_INPUT);
 static BoardInput  sw_3(GPIO_NUM_22, GPIO_MODE_INPUT);
@@ -36,30 +39,40 @@ static BoardInput  sw_3(GPIO_NUM_22, GPIO_MODE_INPUT);
 static BoardInput  sense_h(GPIO_NUM_27, GPIO_MODE_INPUT);
 static BoardInput  sense_l(GPIO_NUM_3, GPIO_MODE_INPUT);
 
+// I2C sensor
 static BoardI2cMaster i2c_master(I2C_NUM_0);
 static BoardTemperature sensor(i2c_master);
 
+// Timers to debounce inputs
 static TimerHandle_t timer_buttons_hndl = NULL;
 static TimerHandle_t timer_sensors_hndl = NULL;
+// Timer to detect long press then factory reset the device 
 static TimerHandle_t timer_reset_hndl   = NULL;
+// ISR callbacks for inputs
 static volatile BoardInput* buttons_pending_isr = NULL;
 static volatile BoardInput* sensors_pending_isr = NULL;
 
+// Queues for inter-process communication
 static QueueHandle_t queue_zigbee_to_main = NULL;
 static QueueHandle_t queue_main_to_zigbee = NULL;
 
+// Current state of the cover
 static volatile CoverState cover_state = STATE_UNKNOWN;
 
+// Current temperature and humdidity, updated only when needed
 static uint16_t humidity    = 0;
 static int16_t temperature  = 0;
 
 // --- LOCAL FUNCTION PROTOTYPES --
 static void InputInterruptHandler(void* data);
 
+// Debounce callbacks
 static void ButtonsHandlerClbk(TimerHandle_t xTimer);
 static void SensorsHandlerClbk(TimerHandle_t xTimer);
+
 static void ResetHandlerClbk(TimerHandle_t xTimer);
 
+// Trigger the load with a 200ms pulse
 static void TriggerLoad(void);
 
 // --- LOCAL FUNCTION DEFINITION --
@@ -67,6 +80,7 @@ static void InputInterruptHandler(void* data)
 {
     BoardInput* in = (BoardInput*) data;
 
+    // Start the corresponding debounce task
     if (in == &sw_1
     || in == &sw_2
     || in == &sw_3)
@@ -141,6 +155,7 @@ static void SensorsHandlerClbk(TimerHandle_t xTimer)
         }
     }
 
+    // Notify Zigbee process
     xQueueSendFromISR(queue_main_to_zigbee, &msg, NULL);
 
     sensors_pending_isr = NULL;
@@ -189,6 +204,7 @@ extern "C" void app_main(void)
     // Create deffered interrupt handler
     timer_buttons_hndl = xTimerCreate("Timer-Buttons", 100  / portTICK_PERIOD_MS, pdFALSE, NULL, ButtonsHandlerClbk);
     timer_sensors_hndl = xTimerCreate("Timer-Sensors", 1000 / portTICK_PERIOD_MS, pdFALSE, NULL, SensorsHandlerClbk);
+    
     timer_reset_hndl   = xTimerCreate("Timer-Reset", 5000 / portTICK_PERIOD_MS, pdFALSE, NULL, ResetHandlerClbk);
 
     // Create queues for Zigbee events processing
@@ -214,6 +230,7 @@ extern "C" void app_main(void)
 
     sensor.StartMeasurement();
 
+    // Init Zigbee stack and app
     AppZigbee_Init(queue_zigbee_to_main, queue_main_to_zigbee);
 
     ZigbeeToMainEvent ztm_msg;

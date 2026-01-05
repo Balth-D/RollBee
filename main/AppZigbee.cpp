@@ -18,12 +18,15 @@
 static const char *TAG = "AppZigbee";
 
 // --- LOCAL TYPEDEFS ---
+
+// Covering attributes
 typedef struct {
     uint8_t current_position_lift_percentage;
     uint8_t installed_open_limit_lift;
     uint8_t installed_closed_limit_lift;
 } zb_window_covering_attrs_t;
 
+// Temperature attributes
 typedef struct {
     int16_t 	measure_value;
     int16_t 	min_measure_value;
@@ -31,6 +34,7 @@ typedef struct {
     uint16_t    tolerance;
 } zb_temperature_measurement_attrs_t;
 
+// Humidity attributes
 typedef struct {
     uint16_t measure_value;
     uint16_t min_measure_value;
@@ -39,6 +43,9 @@ typedef struct {
 } zb_rel_humidity_measurement_attrs_t;
 
 // --- LOCAL VARIABLES  ---
+
+// Local copies of the Zigbee attribute values
+
 static zb_window_covering_attrs_t window_covering_ctx = {
     .current_position_lift_percentage = 50,
     .installed_open_limit_lift        = 0,
@@ -61,20 +68,33 @@ static zb_rel_humidity_measurement_attrs_t humidity_measurement_ctx = {
     .tolerance          = 300,
 };
 
-
+// Endpoint numbers
 static constexpr uint8_t WINDOW_COVERING_ENDPOINT   = 1;
 static constexpr uint8_t SENSOR_ENDPOINT            = 10;
 
+// Basic cluster info
 static char* manufacturer_id  = "\x07""Balth.D";
-static char* device_id        = "\x0B""BD_ZBT_C_v2";
+static char* device_id        = "\x07""RollBee";
 
+// Handle of the inter-process queues
 static QueueHandle_t queue_zigbee_to_main;
 static QueueHandle_t queue_main_to_zigbee;
 
 // --- STATIC FUNCTIONS DECLARATION ---
+
+// Steering process start trigger
 static void ZigbeeStartTopLevelCommissionningHandler(uint8_t mode_mask);
+
+// Called when an attribute update is received
 static esp_err_t ZigbeeAttributeHandler(const esp_zb_zcl_set_attr_value_message_t* message);
+
+// Called when a Zigbee command is received
+static esp_err_t ZigbeeWindowCoveringHandler(const esp_zb_zcl_window_covering_movement_message_t* message);
+
+// Called by the Zigbee stack when something has to be notified to the high level app
 static esp_err_t ZigbeeHandler(esp_zb_core_action_callback_id_t callback_id, const void *message);
+
+// Main Zigbee task 
 static void ZigbeeTask(void *params);
 
 // --- STATIC FUNCTIONS DEFINITION ---
@@ -171,7 +191,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     }
 }
 
-// Zigbee attribute handler
 static esp_err_t ZigbeeAttributeHandler(const esp_zb_zcl_set_attr_value_message_t* message)
 {
     esp_err_t ret = ESP_OK;
@@ -207,6 +226,7 @@ static esp_err_t ZigbeeWindowCoveringHandler(const esp_zb_zcl_window_covering_mo
         {
             ZigbeeToMainEvent evt;
 
+            // A command for the covering cluster has arrived
             switch (message->command)
             {
             case ESP_ZB_ZCL_CMD_WINDOW_COVERING_UP_OPEN:
@@ -237,7 +257,6 @@ static esp_err_t ZigbeeWindowCoveringHandler(const esp_zb_zcl_window_covering_mo
     return ret;
 }
 
-// Zigbee event handler
 static esp_err_t ZigbeeHandler(esp_zb_core_action_callback_id_t callback_id, const void* message)
 {
     esp_err_t ret = ESP_OK;
@@ -252,6 +271,7 @@ static esp_err_t ZigbeeHandler(esp_zb_core_action_callback_id_t callback_id, con
     }
     case ESP_ZB_CORE_WINDOW_COVERING_MOVEMENT_CB_ID:
     {
+        // Command has been requested
         ret = ZigbeeWindowCoveringHandler((esp_zb_zcl_window_covering_movement_message_t*) message);
         break;
     }
@@ -268,19 +288,20 @@ static esp_err_t ZigbeeHandler(esp_zb_core_action_callback_id_t callback_id, con
 // Main Zigbee task
 static void ZigbeeTask(void *params)
 {
-    // Initialize Zigbee stack
+    // Network configuration
     esp_zb_cfg_t zb_nwk_cfg = {};
-    zb_nwk_cfg.esp_zb_role            = ESP_ZB_DEVICE_TYPE_ROUTER;
+    zb_nwk_cfg.esp_zb_role            = ESP_ZB_DEVICE_TYPE_ROUTER;  // Router mode for the mesh network
     zb_nwk_cfg.install_code_policy    = false;
     zb_nwk_cfg.nwk_cfg.zed_cfg        = {
             .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_64MIN,
             .keep_alive = 3000,
-        };
+    };
 
     // Initialise low-level Zigbee
     esp_zb_init(&zb_nwk_cfg);
 
     // -- Configure and create the endpoints
+
     // Window covering endpoint (first EP with all settings too)
     esp_zb_window_covering_cfg_t    window_covering_cfg     = ESP_ZB_DEFAULT_WINDOW_COVERING_CONFIG();
     // Basic config amend: power source
@@ -290,8 +311,10 @@ static void ZigbeeTask(void *params)
     window_covering_cfg.window_cfg.covering_type            = ESP_ZB_ZCL_ATTR_WINDOW_COVERING_TYPE_ROLLERSHADE_EXTERIOR;
     window_covering_cfg.window_cfg.covering_status          = ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CONFIG_OPERATIONAL | ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CONFIG_ONLINE;
 
+    // Create endpoint list
     esp_zb_ep_list_t* ep_list = esp_zb_ep_list_create();
 
+    // Configure the covering endpoint
     esp_zb_endpoint_config_t window_covering_endpoint_config = {
         .endpoint               = WINDOW_COVERING_ENDPOINT,
         .app_profile_id         = ESP_ZB_AF_HA_PROFILE_ID,
@@ -299,6 +322,7 @@ static void ZigbeeTask(void *params)
         .app_device_version     = 0,
     };
 
+    // Add newly created endpoint to the list
     esp_zb_ep_list_add_ep(ep_list, esp_zb_window_covering_clusters_create(&window_covering_cfg), window_covering_endpoint_config);
 
     // Sensor endpoint (fully custom EP)
@@ -328,7 +352,7 @@ static void ZigbeeTask(void *params)
         .max_value = humidity_measurement_ctx.max_measure_value,
     };
     esp_zb_attribute_list_t *humidity_sensor_cluster = esp_zb_humidity_meas_cluster_create(&humidity_meas_cfg);
-    ESP_ERROR_CHECK(esp_zb_humidity_meas_cluster_add_attr(humidity_sensor_cluster,    ESP_ZB_ZCL_ATTR_REL_HUMIDITY_TOLERANCE_ID, &humidity_measurement_ctx.tolerance));
+    ESP_ERROR_CHECK(esp_zb_humidity_meas_cluster_add_attr(humidity_sensor_cluster, ESP_ZB_ZCL_ATTR_REL_HUMIDITY_TOLERANCE_ID, &humidity_measurement_ctx.tolerance));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_humidity_meas_cluster(sensor_ep_cluster_list, humidity_sensor_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
     // Add the EP
@@ -340,6 +364,7 @@ static void ZigbeeTask(void *params)
     esp_zb_attribute_list_t *basic_cluster              = NULL;
     esp_zb_attribute_list_t *covering_cluster           = NULL;
 
+    // Retrieve the window covering endpoint from the list
     cluster_list_covering_ep = esp_zb_ep_list_get_ep(ep_list, WINDOW_COVERING_ENDPOINT);
 
     // Set device manufacturer and name
@@ -347,7 +372,7 @@ static void ZigbeeTask(void *params)
     ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, static_cast<void*>(manufacturer_id)));
     ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID,  static_cast<void*>(device_id)));
     
-    // Register usecase clusters
+    // Register covering attributes
     covering_cluster = esp_zb_cluster_list_get_cluster(cluster_list_covering_ep, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     ESP_ERROR_CHECK(esp_zb_window_covering_cluster_add_attr(covering_cluster, ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID,  &window_covering_ctx.current_position_lift_percentage));
     ESP_ERROR_CHECK(esp_zb_window_covering_cluster_add_attr(covering_cluster, ESP_ZB_ZCL_ATTR_WINDOW_COVERING_INSTALLED_OPEN_LIMIT_LIFT_ID,         &window_covering_ctx.installed_open_limit_lift));
@@ -433,6 +458,7 @@ static void AttributesUpdateTask(void* params)
 // --- EXPOSED FUNCTIONS ---
 bool AppZigbee_Init(QueueHandle_t queue_zm, QueueHandle_t queue_mz)
 {
+    // Local copy of the queues handle
     queue_zigbee_to_main = queue_zm;
     queue_main_to_zigbee = queue_mz;
 
@@ -442,7 +468,10 @@ bool AppZigbee_Init(QueueHandle_t queue_zm, QueueHandle_t queue_mz)
 
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
+
+    // Create the Zigbee task
     xTaskCreate(ZigbeeTask, "Task-Zigbee", 4096, NULL, 5, NULL);
+    // Create the attributes update task
     xTaskCreate(AttributesUpdateTask, "Task-Attributes", 1024, NULL, 5, NULL);
 
     return true;
@@ -450,6 +479,7 @@ bool AppZigbee_Init(QueueHandle_t queue_zm, QueueHandle_t queue_mz)
 
 bool AppZigbee_Reset(void)
 {
+    // Force network leave and factory reset
     esp_zb_bdb_reset_via_local_action();
 
     return true;
